@@ -1,0 +1,32 @@
+# Sandbox CI for the ADCP personal MVP. Read-only token, no secrets.
+# Hosted-check identity bound by the sandbox Standing Merge Policy:
+#   app github-actions / workflow_path .github/workflows/ci.yml / job_name Sandbox CI
+name: Sandbox CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox-ci:
+    name: Sandbox CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Verify candidate identity
+        run: |
+          echo "event=${GITHUB_EVENT_NAME} candidate=${CANDIDATE_SHA} head=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
