@@ -1,0 +1,106 @@
+# ADCP AUTO-1B-S0: disposable, read-only GitHub App authentication probe.
+# Only manual workflow_dispatch. No checkout, provider call, merge or deploy.
+# Removal: delete after the owner records the first PASS/FAIL evidence.
+name: Sandbox App Auth Probe
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: sandbox-app-auth-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Sandbox App Auth Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment: sandbox-app-probe
+    steps:
+      - name: T0 Reject ambient GitHub token fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
+            echo "T0_NO_FALLBACK=FAIL"
+            exit 1
+          fi
+          echo "T0_NO_FALLBACK=PASS"
+
+      # With owner specified and repositories omitted, this token covers the
+      # installation's repositories and verifies the installation breadth.
+      - name: Mint installation-wide metadata-only token
+        id: breadth
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        with:
+          client-id: ${{ vars.SANDBOX_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_APP_PRIVATE_KEY }}
+          owner: caseni
+          permission-metadata: read
+
+      - name: Mint sandbox-scoped read-only token
+        id: scoped
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        with:
+          client-id: ${{ vars.SANDBOX_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SANDBOX_APP_PRIVATE_KEY }}
+          owner: caseni
+          repositories: adcp-mvp-sandbox
+          permission-metadata: read
+          permission-contents: read
+
+      - name: T1-T6 Verify identity and repository scope
+        shell: bash
+        env:
+          BREADTH_TOKEN: ${{ steps.breadth.outputs.token }}
+          SCOPED_TOKEN: ${{ steps.scoped.outputs.token }}
+          INSTALLATION_MATCH: ${{ vars.EXPECTED_INSTALLATION_ID != '' && steps.breadth.outputs.installation-id == vars.EXPECTED_INSTALLATION_ID && steps.scoped.outputs.installation-id == vars.EXPECTED_INSTALLATION_ID }}
+          APP_SLUG_MATCH: ${{ steps.breadth.outputs.app-slug == 'adcp-mvp-sandbox-runner' && steps.scoped.outputs.app-slug == 'adcp-mvp-sandbox-runner' }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          fail=0
+
+          check() {
+            if [[ "$2" == "true" ]]; then
+              echo "$1=PASS"
+            else
+              echo "$1=FAIL"
+              fail=1
+            fi
+          }
+
+          api() {
+            curl --silent --show-error --output "$3" --write-out '%{http_code}' \
+              --header "Authorization: Bearer $1" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com$2"
+          }
+
+          repo_scope_exact() {
+            jq -e '.total_count == 1 and (.repositories | length) == 1 and .repositories[0].full_name == "caseni/adcp-mvp-sandbox"' "$1" >/dev/null
+          }
+
+          check T1_TOKENS_PRESENT "$([[ -n "$BREADTH_TOKEN" && -n "$SCOPED_TOKEN" ]] && echo true || echo false)"
+          check T2_INSTALLATION_ID_MATCH "$INSTALLATION_MATCH"
+          check T3_APP_SLUG_MATCH "$APP_SLUG_MATCH"
+
+          code="$(api "$BREADTH_TOKEN" "/installation/repositories?per_page=100" "$tmp/installation.json")"
+          check T4_INSTALLATION_REPO_SCOPE "$([[ "$code" == "200" ]] && repo_scope_exact "$tmp/installation.json" && echo true || echo false)"
+
+          code="$(api "$SCOPED_TOKEN" "/installation/repositories?per_page=100" "$tmp/scoped.json")"
+          check T5_SCOPED_TOKEN_REPO_SCOPE "$([[ "$code" == "200" ]] && repo_scope_exact "$tmp/scoped.json" && echo true || echo false)"
+
+          # Supportive check only: this is a public repository, so anonymous
+          # contents reads alone do not prove authenticated access.
+          code="$(api "$SCOPED_TOKEN" "/repos/caseni/adcp-mvp-sandbox/contents/README.md" "$tmp/readme.json")"
+          check T6_CONTENTS_READ "$([[ "$code" == "200" ]] && echo true || echo false)"
+
+          exit "$fail"
+      # Both token steps automatically revoke their tokens in post-job cleanup.
+      # No skip-token-revoke option is supplied.
